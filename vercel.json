@@ -1,0 +1,9 @@
+{
+  "buildCommand": null,
+  "outputDirectory": "public",
+  "functions": {
+    "api/**/*.ts": {
+      "runtime": "edge"
+    }
+  }
+}
