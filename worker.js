@@ -1,156 +1,183 @@
-// Cloudflare Worker - Paper Summarizer API Proxy
-// 部署：wrangler deploy
-// 環境變數：NVIDIA_API_KEY 需設在 Cloudflare Secrets
+// Cloudflare Worker — Paper Summarizer API Proxy
+// 功能：接收前端傳來的 PDF 文字 + 語言，呼叫 AI API，回傳結構化摘要
+//
+// 部署步驟：
+// 1. 登入 Cloudflare Dashboard → Workers & Pages
+// 2. 建立新 Worker，貼上此程式碼
+// 3. 設定環境變數：
+//    - API_KEY = 你的 OpenRouter API Key（sk-or-...）
+//    - API_BASE = https://openrouter.ai/api/v1 （預設）
+//    - MODEL = deepseek/deepseek-chat （預設）
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
-};
+}
 
 export default {
   async fetch(request, env) {
+    // Handle CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: CORS });
+      return new Response(null, { headers: CORS })
     }
 
     if (request.method !== 'POST') {
-      return new Response('Method not allowed', { status: 405, headers: CORS });
+      return new Response('Method not allowed', { 
+        status: 405,
+        headers: CORS 
+      })
     }
 
     try {
-      const formData = await request.formData();
-      const file = formData.get('file');
-      const language = formData.get('language') || 'zh';
+      const body = await request.json()
+      const { text, language = 'zh', prompt: customPrompt } = body
 
-      if (!file) {
-        return new Response(JSON.stringify({ error: 'No file uploaded' }), {
-          status: 400,
-          headers: { ...CORS, 'Content-Type': 'application/json' },
-        });
+      if (!text || text.length < 100) {
+        return Response.json(
+          { error: 'PDF 文字過短，請確認檔案是否可讀' },
+          { status: 400, headers: CORS }
+        )
       }
 
-      // Read PDF bytes → base64
-      const buffer = await file.arrayBuffer();
-      const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+      // Use custom prompt or default
+      const systemPrompt = customPrompt || getSystemPrompt(language)
+      const apiKey = env.API_KEY
+      const apiBase = env.API_BASE || 'https://openrouter.ai/api/v1'
+      const model = env.MODEL || 'deepseek/deepseek-chat'
 
-      // Extract text client-side is not possible in Worker; use pdf.js via AI or
-      // send to NVIDIA with document understanding if available.
-      // Fallback: use simple text extraction heuristic on raw bytes.
-      const text = extractTextHeuristic(buffer);
-
-      if (!text || text.length < 50) {
-        return new Response(JSON.stringify({
-          error: '無法從 PDF 擷取文字，可能是掃描檔或加密檔案'
-        }), {
-          status: 400,
-          headers: { ...CORS, 'Content-Type': 'application/json' },
-        });
+      if (!apiKey) {
+        return Response.json(
+          { error: 'API Key 未設定，請在 Worker 環境變數中設定 API_KEY' },
+          { status: 500, headers: CORS }
+        )
       }
 
-      const systemPrompt = language === 'zh'
-        ? `你是學術論文分析專家。分析論文內容，只輸出JSON：
-{"title":"標題","authors":["作者"],"abstract":"200字摘要","objectives":["目標"],"methods":"方法","key_findings":["發現"],"conclusion":"結論"}`
-        : `You are an academic paper analysis expert. Analyze the paper, output ONLY JSON:
-{"title":"Title","authors":["Author"],"abstract":"200 word summary","objectives":["Objective"],"methods":"Methods","key_findings":["Finding"],"conclusion":"Conclusion"}`;
-
-      const aiRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+      // Call AI API
+      const aiResponse = await fetch(`${apiBase}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${env.NVIDIA_API_KEY}`,
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': request.headers.get('Origin') || 'https://paper-summarizer.lingo1516.github.io',
+          'X-Title': 'Paper Summarizer',
         },
         body: JSON.stringify({
-          model: 'nvidia/llama-3.1-nemotron-70b-instruct',
+          model: model,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: `論文內容：\n${text.slice(0, 12000)}` },
           ],
           temperature: 0.3,
-          max_tokens: 1500,
+          max_tokens: 2000,
         }),
-      });
+      })
 
-      if (!aiRes.ok) {
-        const err = await aiRes.text();
-        return new Response(JSON.stringify({ error: `AI API error: ${err}` }), {
-          status: 502,
-          headers: { ...CORS, 'Content-Type': 'application/json' },
-        });
+      if (!aiResponse.ok) {
+        const errText = await aiResponse.text()
+        console.error('AI API error:', errText)
+        return Response.json(
+          { error: `AI API 錯誤: ${errText.slice(0, 200)}` },
+          { status: 502, headers: CORS }
+        )
       }
 
-      const aiData = await aiRes.json();
-      let content = aiData.choices?.[0]?.message?.content || '';
+      const aiData = await aiResponse.json()
+      let content = aiData.choices?.[0]?.message?.content || ''
 
-      // Strip markdown fences
+      // Strip markdown code fences if present
       if (content.includes('```json')) {
-        content = content.split('```json')[1].split('```')[0];
+        content = content.split('```json')[1].split('```')[0]
       } else if (content.includes('```')) {
-        content = content.split('```')[1].split('```')[0];
+        content = content.split('```')[1].split('```')[0]
       }
+      content = content.trim()
 
-      let result;
+      // Parse JSON response
+      let result
       try {
-        result = JSON.parse(content.trim());
+        result = JSON.parse(content)
       } catch {
-        result = {
-          title: 'Paper Summary',
-          authors: [],
-          abstract: content.slice(0, 800),
-          objectives: [],
-          methods: '',
-          key_findings: [],
-          conclusion: '',
-        };
+        // Fallback: try to extract JSON object from response
+        const match = content.match(/\{[\s\S]*\}/)
+        if (match) {
+          try {
+            result = JSON.parse(match[0])
+          } catch {
+            result = {
+              title: 'Paper Summary',
+              authors: [],
+              abstract: content.slice(0, 800),
+              objectives: [],
+              methods: '',
+              key_findings: [],
+              conclusion: '',
+            }
+          }
+        } else {
+          result = {
+            title: 'Paper Summary',
+            authors: [],
+            abstract: content.slice(0, 800),
+            objectives: [],
+            methods: '',
+            key_findings: [],
+            conclusion: '',
+          }
+        }
       }
 
-      return new Response(JSON.stringify(result), {
-        headers: { ...CORS, 'Content-Type': 'application/json' },
-      });
+      // Ensure consistent shape
+      const finalResult = {
+        title: result.title || '',
+        authors: Array.isArray(result.authors) ? result.authors : [],
+        abstract: result.abstract || '',
+        objectives: Array.isArray(result.objectives) ? result.objectives : [],
+        methods: result.methods || '',
+        key_findings: Array.isArray(result.key_findings) ? result.key_findings : [],
+        conclusion: result.conclusion || '',
+        meta: {
+          language,
+          model,
+          chars: text.length,
+          timestamp: new Date().toISOString(),
+        }
+      }
+
+      return Response.json(finalResult, { headers: CORS })
+
     } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), {
-        status: 500,
-        headers: { ...CORS, 'Content-Type': 'application/json' },
-      });
+      console.error('Worker error:', err)
+      return Response.json(
+        { error: err.message || 'Internal server error' },
+        { status: 500, headers: CORS }
+      )
     }
-  },
-};
-
-// 極簡 PDF 文字擷取：抓取 PDF 中 ( ) 之間的文字物件
-// 對「正常文字型 PDF」有效；掃描圖檔需 OCR
-function extractTextHeuristic(buffer) {
-  const bytes = new Uint8Array(buffer);
-  let raw = '';
-  // Latin-1 decode
-  for (let i = 0; i < bytes.length; i++) {
-    raw += String.fromCharCode(bytes[i]);
   }
+}
 
-  // 嘗試找 FlateDecode 串流外的 Tj/TJ 文字運算子
-  const chunks = [];
-  const tjRe = /\((?:\\.|[^\\)])*\)\s*Tj/g;
-  const tjArrRe = /\[((?:\((?:\\.|[^\\)])*\)|[^\]])*)\]\s*TJ/g;
-
-  let m;
-  while ((m = tjRe.exec(raw)) !== null) {
-    chunks.push(m[0].replace(/\)\s*Tj$/, '').slice(1).replace(/\\([()\\])/g, '$1'));
+function getSystemPrompt(language) {
+  if (language === 'en') {
+    return `You are an academic paper analysis expert. Read the paper carefully and output ONLY valid JSON, no other text:
+{
+  "title": "Paper Title",
+  "authors": ["Author 1", "Author 2"],
+  "abstract": "200-300 word summary of the paper",
+  "objectives": ["Research objective 1", "Research objective 2"],
+  "methods": "Brief description of research methodology",
+  "key_findings": ["Finding 1", "Finding 2", "Finding 3"],
+  "conclusion": "100-150 word conclusion"
+}`
   }
-  while ((m = tjArrRe.exec(raw)) !== null) {
-    const inner = m[1];
-    const parts = inner.match(/\((?:\\.|[^\\)])*\)/g) || [];
-    chunks.push(parts.map(p => p.slice(1, -1).replace(/\\([()\\])/g, '$1')).join(''));
-  }
-
-  let text = chunks.join(' ').replace(/\s+/g, ' ').trim();
-
-  // 若太少（多數 PDF 內容在壓縮串流中），退回抓可讀 ASCII 片段
-  if (text.length < 200) {
-    const asciiRuns = raw.match(/[\x20-\x7E]{30,}/g) || [];
-    text = asciiRuns
-      .filter(s => !/^(endobj|stream|xref|startxref|%PDF)/.test(s))
-      .join(' ')
-      .slice(0, 20000);
-  }
-
-  return text;
+  
+  return `你是學術論文分析專家。仔細閱讀論文內容後，只輸出JSON（繁體中文），不要任何其他文字：
+{
+  "title": "論文標題",
+  "authors": ["作者1", "作者2"],
+  "abstract": "200-300字摘要",
+  "objectives": ["研究目標1", "研究目標2"],
+  "methods": "研究方法描述",
+  "key_findings": ["關鍵發現1", "關鍵發現2", "關鍵發現3"],
+  "conclusion": "100-150字結論"
+}`
 }

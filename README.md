@@ -1,65 +1,98 @@
 # Paper Summarizer 📄
 
-An AI-powered tool that extracts key insights from academic papers with one click. Upload a PDF and get structured summaries in seconds.
+AI-powered PDF paper summarizer — runs entirely in your browser, no server needed.
 
 ## Features
 
-- 📤 **One-click upload** - Drag & drop your PDF
-- 🧠 **AI-powered analysis** - NVIDIA LLM powered
-- 🌐 **Bilingual support** - Chinese & English output
-- 📊 **Structured output** - JSON, Markdown, or HTML
-- 🔍 **Key elements extracted**:
-  - Title & Authors
-  - Abstract summary
-  - Research objectives
-  - Methods overview
-  - Key findings
-  - Conclusions
+- 📤 **Drag & drop** PDF upload
+- 🧠 **AI analysis** — extracts title, authors, abstract, objectives, methods, findings, conclusion
+- 🌐 **Bilingual** — Chinese (zh) & English (en) output
+- 🔒 **Privacy-first** — PDF text processed client-side, only sent to AI API
+- 📦 **Zero deployment** — just open the HTML file or host on any static site
 
-## Quick Start
+## Quick Start (Use Online)
 
-```bash
-pip install -r requirements.txt
-python app.py
+1. Open [paper-summarizer.netlify.app](https://paper-summarizer.netlify.app) (or self-host, see below)
+2. Drag & drop a PDF
+3. Click "Summarize" — wait ~30-60 seconds
+4. Download result as Markdown / JSON / HTML
+
+## Self-Host (Free, 2 minutes)
+
+This project has two parts:
+- `index.html` — the frontend (host anywhere: GitHub Pages, Netlify, Vercel, etc.)
+- `worker.js` — the API proxy (Cloudflare Workers, free tier)
+
+### Step 1: Deploy the Worker
+
+1. Go to [workers.cloudflare.com](https://workers.cloudflare.com)
+2. Click "Create application" → "Hello World Worker"
+3. Replace the code with `worker.js` from this repo
+4. Go to Settings → Variables → Add:
+   - `API_KEY` = your OpenRouter API key (`sk-or-...`)
+   - (Optional) `MODEL` = `deepseek/deepseek-chat`
+5. Click "Deploy"
+6. Copy your worker URL (e.g., `https://your-name.workers.dev`)
+
+### Step 2: Deploy the Frontend
+
+Edit `index.html`, change line 215:
+```javascript
+const API_URL = 'https://your-name.workers.dev';
 ```
 
-Set your NVIDIA API key as environment variable:
-```bash
-export NVIDIA_API_KEY="nvapi-xxxxx"
+Then host `index.html` anywhere:
+- GitHub Pages (add `index.html` to a repo, enable Pages)
+- Netlify (drag & drop folder)
+- Vercel
+- Cloudflare Pages
+
+### Or just use GitHub Pages
+
+1. Fork this repo
+2. Edit `index.html`, set `API_URL` to your worker
+3. Enable GitHub Pages in repo settings
+4. Done!
+
+## How It Works
+
+```
+Browser (reads PDF) → Cloudflare Worker → OpenRouter API → JSON result
 ```
 
-Or use OpenAI compatible API:
-```bash
-export OPENAI_API_KEY="your-key"
-export OPENAI_BASE_URL="https://api.some-service.com/v1"
+- PDF is read locally using **PDF.js** (no upload to any server)
+- Only the extracted text is sent to the AI
+- The Worker proxies requests to OpenRouter, hiding your API key
+- Result is rendered and downloadable in 3 formats
+
+## API Contract
+
+```
+POST /chat/completions
+{
+  "text": "extracted pdf text...",
+  "language": "zh",      // or "en"
+  "prompt": "optional custom prompt"
+}
+→ {
+    "title": "...",
+    "authors": [...],
+    "abstract": "...",
+    "objectives": [...],
+    "methods": "...",
+    "key_findings": [...],
+    "conclusion": "...",
+    "meta": {"language": "zh", "model": "...", "chars": 12345}
+  }
 ```
 
-## API
+## Tech Stack
 
-```bash
-# Start the API server
-python api.py  # runs on http://localhost:8000
-
-# Test it
-curl -X POST http://localhost:8000/summarize \
-  -F "file=@paper.pdf" \
-  -F "language=zh" \
-  -F "format=markdown"
-```
-
-## Output Formats
-
-- **JSON**: Machine-readable for integrations
-- **Markdown**: Human-readable, easy to share
-- **HTML**: Beautiful formatted report
-
-## Use Cases
-
-- Literature review acceleration
-- Research paper screening
-- Meeting preparation (know the paper before reading)
-- Teaching material preparation
+- **Frontend**: Vanilla JS + PDF.js
+- **Backend**: Cloudflare Workers (serverless)
+- **AI**: OpenRouter (DeepSeek, GPT-4, Claude, etc.)
+- **License**: MIT
 
 ## License
 
-MIT License - Free to use and modify.
+MIT — free to use, modify, and host.
