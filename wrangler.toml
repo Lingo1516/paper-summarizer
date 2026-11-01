@@ -2,7 +2,6 @@ name = "paper-summarizer-proxy"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 
-# 環境變數（部署時設定）：
-# API_KEY = sk-or-... （OpenRouter API Key）
-# API_BASE = https://openrouter.ai/api/v1 （可選）
-# MODEL = deepseek/deepseek-chat （可選）
+# 環境變數（部署後在 Cloudflare Dashboard 設定）：
+# API_KEY - OpenRouter API Key（從 ~/.openclaw/.env 複製）
+# MODEL = nvidia/nemotron-3.5-lightning:free

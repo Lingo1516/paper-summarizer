@@ -6,8 +6,7 @@
 // 2. 建立新 Worker，貼上此程式碼
 // 3. 設定環境變數：
 //    - API_KEY = 你的 OpenRouter API Key（sk-or-...）
-//    - API_BASE = https://openrouter.ai/api/v1 （預設）
-//    - MODEL = deepseek/deepseek-chat （預設）
+//    - MODEL = nvidia/nemotron-3.5-lightning:free （免費模型）
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -43,8 +42,7 @@ export default {
       // Use custom prompt or default
       const systemPrompt = customPrompt || getSystemPrompt(language)
       const apiKey = env.API_KEY
-      const apiBase = env.API_BASE || 'https://openrouter.ai/api/v1'
-      const model = env.MODEL || 'deepseek/deepseek-chat'
+      const model = env.MODEL || 'nvidia/nemotron-3.5-lightning:free'
 
       if (!apiKey) {
         return Response.json(
