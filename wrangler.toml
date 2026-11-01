@@ -1,0 +1,5 @@
+name = "paper-summarizer-api"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# NVIDIA_API_KEY is set via: wrangler secret put NVIDIA_API_KEY

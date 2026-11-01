@@ -1,8 +1,7 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-import os
-import json
-import tempfile
+from fastapi.responses import JSONResponse
+import os, json, tempfile, uuid, time, threading, yaml
 from openai import OpenAI
 import pdfplumber
 
@@ -16,102 +15,168 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Use NVIDIA API (free tier)
-client = OpenAI(
-    api_key=os.getenv("NVIDIA_API_KEY", "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"),
-    base_url="https://integrate.api.nvidia.com/v1"
-)
+# ---------- LLM ----------
+def get_client():
+    api_key = os.getenv("LLM_API_KEY")
+    base_url = os.getenv("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    model = os.getenv("LLM_MODEL", "deepseek/deepseek-chat")
+    if not api_key:
+        try:
+            cfg = yaml.safe_load(open(os.path.expanduser("~/.hermes/config.yaml")))
+            prov = cfg["providers"]["openrouter"]
+            api_key = prov["api_key"]
+            base_url = prov.get("base_url") or base_url
+        except Exception:
+            pass
+    if not api_key:
+        raise RuntimeError("No LLM API key configured")
+    return OpenAI(api_key=api_key, base_url=base_url), model
 
-SYSTEM_PROMPT_ZH = """你是學術論文分析專家。請分析以下PDF論文內容，產出結構化摘要。
-只輸出JSON，不要有其他文字。格式：
-{
-  "title": "論文標題",
-  "authors": ["作者1", "作者2"],
-  "abstract": "200字摘要",
-  "objectives": ["目標1", "目標2"],
-  "methods": "研究方法描述",
-  "key_findings": ["發現1", "發現2", "發現3"],
-  "conclusion": "100字結論"
-}"""
 
-SYSTEM_PROMPT_EN = """You are an academic paper analysis expert. Analyze the following PDF paper and produce a structured summary.
-Output ONLY JSON, no other text. Format:
-{
-  "title": "Paper Title",
-  "authors": ["Author 1", "Author 2"],
-  "abstract": "200 word summary",
-  "objectives": ["Objective 1", "Objective 2"],
-  "methods": "Research methodology description",
-  "key_findings": ["Finding 1", "Finding 2", "Finding 3"],
-  "conclusion": "100 word conclusion"
-}"""
+SYSTEM_PROMPT = {
+    "zh": """你是學術論文分析專家。仔細閱讀論文內容後，只輸出JSON（繁體中文），不要任何其他文字：
+{"title":"論文標題","authors":["作者1","作者2"],"abstract":"200-300字摘要","objectives":["研究目標1","研究目標2"],"methods":"研究方法描述","key_findings":["關鍵發現1","關鍵發現2","關鍵發現3"],"conclusion":"100-150字結論"}""",
+    "en": """You are an academic paper analysis expert. Read the paper carefully and output ONLY JSON (English), no other text:
+{"title":"Paper Title","authors":["Author 1","Author 2"],"abstract":"200-300 word summary","objectives":["Objective 1","Objective 2"],"methods":"Research methodology","key_findings":["Finding 1","Finding 2","Finding 3"],"conclusion":"100-150 word conclusion"}""",
+}
 
+EMPTY = {"title": "", "authors": [], "abstract": "", "objectives": [],
+         "methods": "", "key_findings": [], "conclusion": ""}
+
+def parse_json_response(raw: str) -> dict:
+    txt = raw.strip()
+    if "```json" in txt:
+        txt = txt.split("```json", 1)[1].split("```", 1)[0]
+    elif "```" in txt:
+        txt = txt.split("```", 1)[1].split("```", 1)[0]
+    txt = txt.strip()
+    s, e = txt.find("{"), txt.rfind("}")
+    if s != -1 and e > s:
+        txt = txt[s:e + 1]
+    return json.loads(txt)
+
+
+def extract_pdf(path: str, max_pages: int = 12) -> tuple[str, int]:
+    with pdfplumber.open(path) as pdf:
+        chunks = []
+        for page in pdf.pages[:max_pages]:
+            t = page.extract_text()
+            if t:
+                chunks.append(t)
+        return "\n\n".join(chunks), len(pdf.pages)
+
+
+def run_job(job_id: str, pdf_path: str, language: str, max_pages: int, filename: str):
+    try:
+        JOBS[job_id]["stage"] = "reading_pdf"
+        text, total_pages = extract_pdf(pdf_path, max_pages)
+        if len(text.strip()) < 100:
+            JOBS[job_id].update(status="error",
+                error="無法從 PDF 擷取足夠文字（可能是掃描圖檔或加密檔案，需先 OCR）")
+            return
+
+        JOBS[job_id]["stage"] = "analyzing"
+        client, model = get_client()
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT.get(language, SYSTEM_PROMPT["zh"])},
+                {"role": "user", "content": f"論文內容：\n{text[:14000]}"},
+            ],
+            temperature=0.3,
+            max_tokens=2000,
+        )
+        raw = resp.choices[0].message.content
+
+        try:
+            result = parse_json_response(raw)
+        except Exception as e:
+            print(f"[WARN] parse failed {e}: {raw[:400]}", flush=True)
+            result = dict(EMPTY)
+            result["title"] = filename
+            result["abstract"] = raw[:1500]
+
+        for k, v in EMPTY.items():
+            result.setdefault(k, v)
+        if isinstance(result.get("authors"), str):
+            result["authors"] = [result["authors"]]
+        for k in ("objectives", "key_findings"):
+            if isinstance(result.get(k), str):
+                result[k] = [result[k]]
+
+        result["_meta"] = {
+            "pages_read": min(max_pages, total_pages),
+            "pages_total": total_pages,
+            "chars": len(text),
+            "model": model,
+            "filename": filename,
+        }
+        JOBS[job_id].update(status="done", result=result, stage="done")
+    except Exception as e:
+        JOBS[job_id].update(status="error", error=str(e)[:400])
+    finally:
+        try:
+            os.unlink(pdf_path)
+        except Exception:
+            pass
+        JOBS[job_id]["updated"] = time.time()
+
+
+JOBS: dict[str, dict] = {}
+
+
+def cleanup_old():
+    now = time.time()
+    for jid in [k for k, v in JOBS.items() if now - v.get("updated", now) > 3600]:
+        JOBS.pop(jid, None)
+
+
+# ---------- endpoints ----------
 @app.post("/summarize")
-async def summarize_paper(
+async def summarize_submit(
+    background: BackgroundTasks,
     file: UploadFile = File(...),
     format: str = Form("markdown"),
-    language: str = Form("zh")
+    language: str = Form("zh"),
+    max_pages: int = Form(12),
 ):
-    if not file.filename.endswith('.pdf'):
+    """送出分析任務，立刻回傳 job_id（避開 Cloudflare 100 秒限制）"""
+    if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Only PDF files are supported")
-    
-    # Read PDF
+
     content = await file.read()
+    if len(content) > 25 * 1024 * 1024:
+        raise HTTPException(400, "PDF too large (max 25MB)")
+
+    cleanup_old()
+
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
         tmp.write(content)
         tmp_path = tmp.name
-    
-    try:
-        with pdfplumber.open(tmp_path) as pdf:
-            pages = []
-            for page in pdf.pages[:10]:
-                text = page.extract_text()
-                if text:
-                    pages.append(text)
-            pdf_text = "\n\n".join(pages)
-    finally:
-        os.unlink(tmp_path)
-    
-    if not pdf_text.strip():
-        raise HTTPException(400, "Could not extract text from PDF")
-    
-    # Call AI
-    system_prompt = SYSTEM_PROMPT_ZH if language == "zh" else SYSTEM_PROMPT_EN
-    try:
-        response = client.chat.completions.create(
-            model="nvidia/llama-3.1-nemotron-70b-instruct",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"論文內容：\n{pdf_text[:10000]}"}
-            ],
-            temperature=0.3,
-            max_tokens=1500
-        )
-        ai_output = response.choices[0].message.content
-    except Exception as e:
-        raise HTTPException(500, f"AI API error: {str(e)}")
-    
-    # Parse JSON
-    try:
-        # Try to extract JSON from response
-        if "```json" in ai_output:
-            ai_output = ai_output.split("```json")[1].split("```")[0]
-        elif "```" in ai_output:
-            ai_output = ai_output.split("```")[1].split("```")[0]
-        result = json.loads(ai_output.strip())
-    except:
-        result = {
-            "title": "Paper Summary",
-            "authors": [],
-            "abstract": ai_output[:500],
-            "objectives": [],
-            "methods": "",
-            "key_findings": [],
-            "conclusion": ""
-        }
-    
-    return result
+
+    job_id = uuid.uuid4().hex
+    JOBS[job_id] = {
+        "status": "pending", "stage": "queued",
+        "created": time.time(), "updated": time.time(),
+    }
+    background.add_task(run_job, job_id, tmp_path, language, max_pages, file.filename)
+    return {"job_id": job_id, "status": "pending"}
+
+
+@app.get("/result/{job_id}")
+async def get_result(job_id: str):
+    job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "Job not found or expired")
+    if job["status"] == "done":
+        return job["result"]
+    if job["status"] == "error":
+        return JSONResponse(status_code=500, content={"detail": job.get("error", "failed")})
+    return JSONResponse(status_code=202, content={
+        "status": job["status"], "stage": job.get("stage", "")
+    })
+
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {"status": "ok", "jobs": len(JOBS)}
