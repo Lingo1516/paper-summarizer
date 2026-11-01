@@ -42,6 +42,7 @@ export default {
       // Use custom prompt or default
       const systemPrompt = customPrompt || getSystemPrompt(language)
       const apiKey = env.API_KEY
+      const apiBase = env.API_BASE || 'https://openrouter.ai/api/v1'
       const model = env.MODEL || 'nvidia/nemotron-3.5-lightning:free'
 
       if (!apiKey) {
