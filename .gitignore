@@ -1,9 +1,10 @@
-# Paper Summarizer
+.env.local
+.env
 *.pyc
 __pycache__/
-.env
 venv/
 .venv/
 *.db
 .DS_Store
 *.log
+node_modules/
