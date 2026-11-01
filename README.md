@@ -1,11 +1,11 @@
-# PDF Paper Summarizer 📄
+# Paper Summarizer 📄
 
 An AI-powered tool that extracts key insights from academic papers with one click. Upload a PDF and get structured summaries in seconds.
 
 ## Features
 
 - 📤 **One-click upload** - Drag & drop your PDF
-- 🧠 **AI-powered analysis** - GPT-4 / Claude powered
+- 🧠 **AI-powered analysis** - NVIDIA LLM powered
 - 🌐 **Bilingual support** - Chinese & English output
 - 📊 **Structured output** - JSON, Markdown, or HTML
 - 🔍 **Key elements extracted**:
@@ -23,9 +23,28 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Set your OpenAI API key as environment variable:
+Set your NVIDIA API key as environment variable:
 ```bash
-export OPENAI_API_KEY="your-key-here"
+export NVIDIA_API_KEY="nvapi-xxxxx"
+```
+
+Or use OpenAI compatible API:
+```bash
+export OPENAI_API_KEY="your-key"
+export OPENAI_BASE_URL="https://api.some-service.com/v1"
+```
+
+## API
+
+```bash
+# Start the API server
+python api.py  # runs on http://localhost:8000
+
+# Test it
+curl -X POST http://localhost:8000/summarize \
+  -F "file=@paper.pdf" \
+  -F "language=zh" \
+  -F "format=markdown"
 ```
 
 ## Output Formats
