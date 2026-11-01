@@ -198,8 +198,9 @@ footer{padding:32px 0;text-align:center;color:var(--muted);font-size:12.5px;bord
 <script>
 // ===== CONFIG =====
 // 修改這裡指向你的 Cloudflare Worker
+// 預設為本專案的臨時隧道（不保證長期可用）
 const API_URL = localStorage.getItem('ps_api') || 
-  'https://paper-summarizer-proxy.lingo1516.workers.dev'; // 替換成你的
+  'https://consultant-manuals-couple-wright.trycloudflare.com';
 
 const sysPromptZh = `你是學術論文分析專家。仔細閱讀論文內容後，只輸出JSON（繁體中文），不要任何其他文字：
 {"title":"論文標題","authors":["作者1","作者2"],"abstract":"200-300字摘要","objectives":["研究目標1","研究目標2"],"methods":"研究方法描述","key_findings":["關鍵發現1","關鍵發現2","關鍵發現3"],"conclusion":"100-150字結論"}`;
